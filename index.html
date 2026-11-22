@@ -340,39 +340,119 @@ function tryUnlock(){
 async function saveState(){
   const ok = await storageSetRaw(STORAGE_KEY, JSON.stringify(state));
   if(!ok){ showToast('تعذر الحفظ، حاول تاني'); }
+  return ok;
 }
 // ---------- camera barcode scanner ----------
 let scannerTargetId = null;
 let html5QrInstance = null;
-function openBarcodeScanner(targetId){
+let scannerSession = 0;
+let scannerHandled = false;
+let scannerStarting = null;
+let scannerClosing = null;
+async function openBarcodeScanner(targetId){
+  if(html5QrInstance || scannerClosing) return;
   if(typeof Html5Qrcode === 'undefined'){
     showToast('مكتبة الكاميرا لسه بتحمّل، جرب تاني كمان ثانية');
     return;
   }
+  const session = ++scannerSession;
   scannerTargetId = targetId;
+  scannerHandled = false;
   document.getElementById('scannerOverlay').style.display = 'flex';
-  html5QrInstance = new Html5Qrcode('qr-reader');
-  html5QrInstance.start(
-    {facingMode:'environment'},
-    {fps:10, qrbox:220},
-    (decodedText)=>{ onBarcodeDetected(decodedText); },
-    ()=>{}
-  ).catch(()=>{
-    showToast('مش قادر أوصل للكاميرا — اتأكد إنك سامح للمتصفح بصلاحية الكاميرا');
-    closeScanner();
-  });
+  const instance = new Html5Qrcode('qr-reader');
+  html5QrInstance = instance;
+  try{
+    scannerStarting = instance.start(
+      {facingMode:'environment'},
+      {fps:10, qrbox:{width:250,height:150}},
+      (decodedText)=>{ if(session===scannerSession) onBarcodeDetected(decodedText); },
+      ()=>{}
+    );
+    await scannerStarting;
+  }catch(e){
+    if(session===scannerSession){
+      await closeScanner();
+      showToast('مش قادر أوصل للكاميرا. اسمح بصلاحية الكاميرا وافتح الموقع في Chrome أو Safari');
+    }
+  }
 }
-function onBarcodeDetected(text){
-  const el = document.getElementById(scannerTargetId);
-  if(el) el.value = text;
-  showToast('اتسجّل الكود ✓');
-  closeScanner();
+async function onBarcodeDetected(text){
+  if(scannerHandled || !html5QrInstance) return;
+  const code = String(text).trim();
+  if(!code) return;
+  scannerHandled = true;
+  const target = scannerTargetId;
+  await closeScanner();
+  if(target==='sale'){
+    await sellByBarcode(code);
+  }else{
+    const el = document.getElementById(target);
+    if(el) el.value = code;
+    showToast('اتسجّل الكود ✓');
+  }
 }
 function closeScanner(){
   document.getElementById('scannerOverlay').style.display = 'none';
-  if(html5QrInstance){
-    html5QrInstance.stop().then(()=>{ try{ html5QrInstance.clear(); }catch(e){} }).catch(()=>{});
+  scannerHandled = true;
+  ++scannerSession;
+  if(scannerClosing) return scannerClosing;
+  const instance = html5QrInstance;
+  if(!instance) return Promise.resolve();
+  const starting = scannerStarting;
+  scannerClosing = (async()=>{
+    try{ await starting; }catch(e){}
+    try{ await instance.stop(); }catch(e){}
+    try{ instance.clear(); }catch(e){}
     html5QrInstance = null;
+    scannerStarting = null;
+    scannerTargetId = null;
+    scannerClosing = null;
+  })();
+  return scannerClosing;
+}
+let barcodeSaleBusy = false;
+async function sellByBarcode(code){
+  if(barcodeSaleBusy) return;
+  code = String(code).trim();
+  const matches = state.products.filter(p=>String(p.code||'').trim()===code && code);
+  if(matches.length===0){
+    openModal(`
+      <div class="sheet-head"><h2>الباركود مش مسجّل</h2><button class="close-x" onclick="closeModal()">✕</button></div>
+      <p>ضيف اسم الصنف وحجمه وسعره مرة واحدة، وبعد الحفظ امسح الباركود تاني لتسجيل البيع.</p>
+      <p id="unknownBarcode" class="num" style="overflow-wrap:anywhere;"></p>
+      <button id="addScannedProduct" class="btn btn-gold btn-block">+ إضافة الصنف</button>
+    `);
+    document.getElementById('unknownBarcode').textContent = code;
+    document.getElementById('addScannedProduct').onclick = ()=>{
+      openProductForm();
+      document.getElementById('f_code').value = code;
+      document.getElementById('f_name').focus();
+    };
+    return;
+  }
+  if(matches.length>1){ showToast('الباركود متكرر في أكتر من صنف. عدّل الأكواد من المخزون الأول'); return; }
+  const product = matches[0];
+  const price = Number(product.sellPrice);
+  const stock = Number(product.qty);
+  if(!Number.isFinite(price) || price<=0){ showToast('سجّل سعر بيع صحيح للصنف من المخزون الأول'); return; }
+  if(!Number.isFinite(stock) || stock<1){ showToast('مفيش كمية كفاية من الصنف في المخزون'); return; }
+  barcodeSaleBusy = true;
+  const sale = {id:uid(), amount:price, qty:1, note:'', date:new Date().toISOString(), productId:product.id, productName:product.name};
+  state.sales = state.sales||[];
+  state.sales.push(sale);
+  product.qty = stock-1;
+  try{
+    const ok = await saveState();
+    if(!ok){
+      state.sales = state.sales.filter(s=>s.id!==sale.id);
+      product.qty = stock;
+      return;
+    }
+    salesFilterDate = todayKey();
+    render();
+    showToast('اتسجّل بيع قطعة: '+esc(product.name)+' ✓');
+  }finally{
+    barcodeSaleBusy = false;
   }
 }
 
@@ -937,6 +1017,8 @@ function renderSales(){
       <h2>🧾 مبيعات ${isToday?'النهاردة':''}</h2>
       <button class="btn btn-gold btn-sm" onclick="openSaleForm()">+ تسجيل بيع</button>
     </div>
+    <button class="btn btn-gold btn-block" style="margin-bottom:6px;" onclick="openBarcodeScanner('sale')">📷 مسح باركود وبيع قطعة</button>
+    <p style="font-size:12px;color:var(--muted);margin:0 0 14px;">كل مسحة بتسجّل قطعة واحدة بسعرها المحفوظ وبتخصمها من المخزون. لقطعة تانية اضغط مسح من جديد.</p>
     <div class="row2" style="margin-bottom:10px;">
       <div><label>اليوم</label><input type="date" id="salesDateInput" value="${salesFilterDate}" onchange="salesFilterDate=this.value; render();"></div>
       <div>
