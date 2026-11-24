@@ -251,7 +251,7 @@
   <button data-tab="sales"><span class="ic">🧾</span>المبيعات</button>
   <button data-tab="inventory"><span class="ic">📦</span>المخزون</button>
   <button data-tab="restock"><span class="ic">🛒</span>الناقص</button>
-  <button data-tab="customers"><span class="ic">👤</span>العملاء</button>
+  <button data-tab="customers"><span class="ic">💰</span>الآجل</button>
   <button data-tab="suppliers"><span class="ic">🤝</span>الموردين</button>
 </nav>
 
@@ -1220,10 +1220,24 @@ function renderPeopleList(kind){
   const q = peopleSearch[kind];
   const arr = state[kind].filter(p=>p.name.toLowerCase().includes(q.toLowerCase()));
   const top = kind==='customers' ? topCreditCustomers(3) : [];
+  const debtors = kind==='customers' ? state.customers.filter(c=>balanceOf(c)>0).sort((a,b)=>balanceOf(b)-balanceOf(a)) : [];
   return `
+  ${kind==='customers'?`
+  <section class="card">
+    <div class="card-head"><h2>💰 مين عليه فلوس</h2>${debtors.length?`<span class="pill red num">${fmt(totalReceivable())}</span>`:''}</div>
+    ${debtors.length===0 ? `<div class="empty-note">مفيش حد عليه فلوس دلوقتي 👌</div>` :
+      debtors.map(c=>`
+        <div class="alert-row">
+          <span style="cursor:pointer;" onclick="openPersonDetail('customers','${c.id}')">${esc(c.name)}<br><span style="color:var(--muted); font-size:11px;">${esc(c.phone||'بدون رقم تليفون')}</span></span>
+          <span style="display:flex; align-items:center; gap:8px;">
+            <span class="num" style="color:var(--red); font-weight:700;">${fmt(balanceOf(c))}</span>
+            <button class="btn btn-gold btn-sm" onclick="remindCustomer('${c.id}')">💬 ذكّره</button>
+          </span>
+        </div>`).join('')}
+  </section>`:''}
   ${top.length>0?`
   <section class="card">
-    <div class="card-head"><h2>🏅 الأكتر تعامل بالأجل</h2></div>
+    <div class="card-head"><h2>🏅 الأكتر تعامل بالأجل</h2>
     ${top.map((x,i)=>`
       <div class="alert-row" style="cursor:pointer;" onclick="openPersonDetail('customers','${x.c.id}')">
         <span>${i===0?'🥇':i===1?'🥈':'🥉'} ${esc(x.c.name)}</span>
@@ -1559,6 +1573,15 @@ function openWhatsapp(phone, text){
   }
   window.open(url, '_blank');
 }
+function remindCustomer(id){
+  const c = state.customers.find(x=>x.id===id);
+  if(!c) return;
+  const bal = balanceOf(c);
+  if(bal<=0){ showToast('الحساب ده متزود'); return; }
+  if(!c.phone || !c.phone.trim()) showToast('مفيش رقم للعميل، اختار جهة الاتصال في واتساب');
+  const text = `السلام عليكم يا ${c.name} 🌷\nتذكير ودي من ${state.shopName||'المحل'}: المتبقي عليك ${fmt(bal)}.\nلو تقدر تسدّد في أقرب وقت نبقى شاكرين. شكراً ليك.`;
+  openWhatsapp(c.phone, text);
+}
 function shareStatement(kind, id){
   const p = state[kind].find(x=>x.id===id);
   const text = buildStatementText(kind, id);
@@ -1611,4 +1634,5 @@ if('serviceWorker' in navigator && location.protocol!=='file:'){
 </script>
 </body>
 </html>
+
 
